@@ -29,6 +29,11 @@
 ## 命令入口
 
 ```bash
+# 0. 跨期事实转接（详见 TRANSFER.md，需要 Shapely >= 2.0）
+python -m parcel_boundary transfer --chain chain.json --facts facts.jsonl --out OUT
+python -m parcel_boundary query --out OUT row F17
+python -m parcel_boundary query --out OUT final-parcel X
+
 # 1. 导入：校验并暂存输入（可多个文件，合并校验；结构错误则失败）
 python -m parcel_boundary import --store STORE input1.json [input2.json ...]
 
@@ -108,7 +113,8 @@ python -m parcel_boundary query --store STORE boundary B1 [--version 1]
 ## 测试
 
 ```bash
-python3 tests/run_tests.py
+python3 tests/run_tests.py              # 原有 23 个用例
+python3 tests/run_transfer_tests.py    # 跨期事实转接验收
 ```
 
 23 个手算核对用例：预期坐标由手写折线与鞋带公式独立计算，不用生产修复
@@ -117,6 +123,7 @@ python3 tests/run_tests.py
 
 ## 已知限制
 
+- 跨期事实转接只读正式发布物，不做坐标转换、不重协调共享边；详见 `TRANSFER.md`。
 - 共享边界的端点必须是两侧环上的顶点（容差内）；端点落在一侧边的中间
   （T 型接头）时判为 `ENDPOINT_MISMATCH`/`NO_SHARED_GEOMETRY` 冲突而不强行
   整理。洞不参与共享边界整理。

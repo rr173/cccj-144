@@ -1,9 +1,10 @@
-"""命令行入口：import / check / publish / query。
+"""命令行入口：import / check / publish / query / transfer。
 
   import   导入并校验输入，写入暂存区（结构错误则整次失败）
   check    检查冲突：对暂存输入跑完整协调，报告写入暂存区（非正式）
   publish  发布：全部候选组检查完成后，把结果原子发布为新版本
   query    查询当前（或指定）版本中的地块 / 共享边
+  transfer 沿版本链把旧编号事实转接到新编号（需要 Shapely）
 
 容差 --tolerance：长度单位，与坐标系一致（坐标为米则为米）。
 面积上限 --max-area-change：面积单位，坐标单位的平方（如平方米）。
@@ -62,11 +63,19 @@ def build_parser() -> argparse.ArgumentParser:
     pp = sub.add_parser("publish", help="发布正式结果（原子切换新版本）")
     add_run_args(pp)
 
-    pq = sub.add_parser("query", help="查询指定地块 / 共享边")
-    pq.add_argument("--store", required=True, help="本地存储目录")
+    pq = sub.add_parser("query", help="查询指定地块 / 共享边 / 转接结果")
+    pq.add_argument("--store", default=None,
+                    help="本地存储目录（查询 transfer 结果时改用 --out）")
     pq.add_argument("--version", type=int, default=None, help="版本号（默认当前版本）")
-    pq.add_argument("kind", choices=["parcel", "boundary"], help="查询对象类型")
-    pq.add_argument("id", help="地块标识或共享边界标识")
+    pq.add_argument("--out", default=None, help="transfer 的输出目录（只读查询）")
+    pq.add_argument("kind", choices=["parcel", "boundary", "row", "final-parcel"],
+                    help="查询对象类型；row/final-parcel 只查 transfer 的 OUT")
+    pq.add_argument("id", help="地块标识、共享边界标识或原始 row_id")
+
+    pt = sub.add_parser("transfer", help="沿版本链把旧编号事实转接到新编号")
+    pt.add_argument("--chain", required=True, help="链文件 chain.json")
+    pt.add_argument("--facts", required=True, help="旧编号事实 facts.jsonl")
+    pt.add_argument("--out", required=True, help="新的输出目录（必须不存在）")
     return p
 
 
@@ -121,7 +130,39 @@ def _cmd_publish(args) -> int:
     return 0
 
 
+def _cmd_transfer(args) -> int:
+    from . import transfer
+    manifest = transfer.run_transfer(args.chain, args.facts, args.out)
+    s = manifest["summary"]
+    print(f"转接完成：{s['row_count']} 行 -> {s['bucket_count']} 个桶；"
+          f"数量 {s['input_quantity']} = arrived {s['arrived']['quantity']} + "
+          f"gap {s['stopped']['gap']['quantity']} + "
+          f"ambiguous {s['stopped']['ambiguous']['quantity']}")
+    print(f"输出目录：{args.out}（完整交付，manifest 记录各输入摘要）")
+    return 0
+
+
 def _cmd_query(args) -> int:
+    if args.kind in ("row", "final-parcel"):
+        if not args.out:
+            print(f"错误：查询 {args.kind} 需要 --out 指向 transfer 输出目录", file=sys.stderr)
+            return 2
+        from . import transfer as transfer_mod
+        if args.kind == "row":
+            out = transfer_mod.query_row(args.out, args.id)
+        else:
+            out = transfer_mod.query_parcel(args.out, args.id)
+        if out is None:
+            print(f"未找到 {args.kind} {args.id!r}（OUT 中无此标识）", file=sys.stderr)
+            return 1
+        _print_json(out)
+        return 0
+    if args.out:
+        print("错误：--out 仅用于 query row / final-parcel", file=sys.stderr)
+        return 2
+    if not args.store:
+        print(f"错误：查询 {args.kind} 需要 --store", file=sys.stderr)
+        return 2
     if args.kind == "parcel":
         out = store.query_parcel(args.store, args.id, args.version)
     else:
@@ -144,9 +185,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             return _cmd_publish(args)
         if args.command == "query":
             return _cmd_query(args)
+        if args.command == "transfer":
+            return _cmd_transfer(args)
+        # 延迟导入失败（缺 Shapely）也按输入/依赖失败返回非零
     except (model.StructuralError, store.StoreError) as e:
         print(f"错误：{e}", file=sys.stderr)
         return 2
+    except Exception as e:
+        from .transfer import TransferError, ComputationError
+        if isinstance(e, (TransferError, ComputationError, ImportError)):
+            print(f"错误：{e}", file=sys.stderr)
+            return 2
+        raise
     return 2
 
 
